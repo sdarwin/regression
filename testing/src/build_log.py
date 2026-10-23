@@ -11,18 +11,47 @@ import xml.dom.minidom
 import xml.dom.pulldom
 from xml.sax.saxutils import unescape, escape
 import os.path
+import sys
 from pprint import pprint
-from __builtin__ import exit
+try:
+    from builtins import exit
+except ImportError:
+    from __builtin__ import exit
+
+
+def format_text( format, args, kargs ):
+    '''
+    str.format() raises UnicodeEncodeError on Python 2 when the format string
+    is a byte string and an argument is unicode holding non-ASCII text, so
+    promote the format string to unicode first (it is always ASCII).
+    '''
+    if not isinstance( format, type(u'') ):
+        format = format.decode( 'ascii' )
+    return format.format( *args, **kargs )
+
+
+def write_line( text ):
+    '''
+    Print one line as UTF-8 on both Python 2 and 3, ignoring the locale.
+    Python 2's stdout takes bytes, and Python 3's stdout is ASCII when no
+    locale is set (common in CI containers), so write UTF-8 bytes to the
+    underlying binary stream in both cases.
+    '''
+    if not isinstance( text, bytes ):
+        text = text.encode( 'utf-8' )
+    out = getattr( sys.stdout, 'buffer', sys.stdout )
+    out.write( text + b'\n' )
+    out.flush()
 
 class BuildOutputXMLParsing(object):
     '''
     XML parsing utilities for dealing with the Boost Build output
     XML format.
     '''
-    
+
     def get_child_data( self, root, tag = None, id = None, name = None, strip = False, default = None ):
         return self.get_data(self.get_child(root,tag=tag,id=id,name=name),strip=strip,default=default)
-    
+
     def get_data( self, node, strip = False, default = None ):
         data = None
         if node:
@@ -45,10 +74,10 @@ class BuildOutputXMLParsing(object):
             if strip:
                 data = data.strip()
         return data
-    
+
     def get_child( self, root, tag = None, id = None, name = None, type = None ):
         return self.get_sibling(root.firstChild,tag=tag,id=id,name=name,type=type)
-    
+
     def get_sibling( self, sibling, tag = None, id = None, name = None, type = None ):
         n = sibling
         while n:
@@ -72,7 +101,7 @@ class BuildOutputXMLParsing(object):
         return None
 
 class BuildOutputProcessor(BuildOutputXMLParsing):
-    
+
     def __init__(self, inputs):
         self.test = {}
         self.target_to_test = {}
@@ -81,7 +110,7 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
         self.timestamps = []
         for input in inputs:
             self.add_input(input)
-    
+
     def add_input(self, input):
         '''
         Add a single build XML output file to our data.
@@ -101,7 +130,7 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
                         (x_f[1])(node)
             elif event == xml.dom.pulldom.END_ELEMENT:
                 context.pop()
-    
+
     def x_name_(self, *context, **kwargs):
         node = None
         names = [ ]
@@ -113,13 +142,15 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
                     suffix = '_'+c.nodeName.replace('-','_').replace('#','_')
                     node = c
                 names.append('x')
-                names = map(lambda x: x+suffix,names)
+                # A list comprehension, not map(): map() is lazy on Python 3,
+                # which broke the next names.append() and the lookup below.
+                names = [ x + suffix for x in names ]
         if node:
             for name in names:
                 if hasattr(self,name):
                     return (name,getattr(self,name))
         return None
-    
+
     def x_build_test(self, node):
         '''
         Records the initial test information that will eventually
@@ -142,7 +173,7 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
         # Add a lookup for the test given the test target.
         self.target_to_test[self.test[test_name]['target']] = test_name
         return None
-    
+
     def x_build_targets_target( self, node ):
         '''
         Process the target dependency DAG into an ancestry tree so we can look up
@@ -165,7 +196,7 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
             self.parent[child_jam_target] = jam_target
             dep_node = self.get_sibling(dep_node.nextSibling,tag='dependency')
         return None
-    
+
     def x_build_action( self, node ):
         '''
         Given a build action log, process into the corresponding test log and
@@ -231,14 +262,14 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
                 if action_type == 'result':
                     test['result'] = action['result']
         return None
-    
+
     def x_build_timestamp( self, node ):
         '''
         The time-stamp goes to the corresponding attribute in the result.
         '''
         self.timestamps.append(self.get_data(node).strip())
         return None
-    
+
     def get_test( self, node, type = None ):
         '''
         Find the test corresponding to an action. For testing targets these
@@ -269,12 +300,12 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
             test = self.test[lib]
         else:
             target_name_ = self.target[target]['name']
-            if self.target_to_test.has_key(target_name_):
+            if target_name_ in self.target_to_test:
                 test = self.test[self.target_to_test[target_name_]]
             else:
                 test = None
         return (base,test)
-    
+
     #~ The command executed for the action. For run actions we omit the command
     #~ as it's just noise.
     def get_action_command( self, action_node, action_type ):
@@ -282,11 +313,11 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
             return self.get_child_data(action_node,tag='command')
         else:
             return ''
-    
+
     #~ The command output.
     def get_action_output( self, action_node, action_type ):
         return self.get_child_data(action_node,tag='output',default='')
-    
+
     #~ Some basic info about the action.
     def get_action_info( self, action_node, action_type ):
         info = {}
@@ -311,17 +342,17 @@ class BuildOutputProcessor(BuildOutputXMLParsing):
         return info
 
 class BuildConsoleSummaryReport(object):
-    
+
     HEADER = '\033[35m\033[1m'
     INFO = '\033[34m'
     OK = '\033[32m'
     WARNING = '\033[33m'
     FAIL = '\033[31m'
     ENDC = '\033[0m'
-    
+
     def __init__(self, bop, opt):
         self.bop = bop
-    
+
     def generate(self):
         self.summary_info = {
             'total' : 0,
@@ -332,11 +363,11 @@ class BuildConsoleSummaryReport(object):
         self.print_test_log()
         self.print_summary()
         self.header_print("======================================================================")
-    
+
     @property
     def failed(self):
         return len(self.summary_info['failed']) > 0
-    
+
     def print_test_log(self):
         self.header_print("Tests run..")
         self.header_print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
@@ -359,7 +390,7 @@ class BuildConsoleSummaryReport(object):
                     self.fail_print("[FAIL] {0}",k)
                 for action in test['actions']:
                     self.print_action(succeed, action)
-    
+
     def print_action(self, test_succeed, action):
         '''
         Print the detailed info of failed or always print tests.
@@ -375,8 +406,9 @@ class BuildConsoleSummaryReport(object):
                 p("{0}",action['command'].strip())
                 p("")
                 for line in output.splitlines():
-                    p("{0}",line.encode('utf-8'))
-    
+                    # No .encode(): on Python 3 that printed b'...' reprs.
+                    p("{0}",line)
+
     def print_summary(self):
         self.header_print("")
         self.header_print("Testing summary..")
@@ -387,27 +419,27 @@ class BuildConsoleSummaryReport(object):
             self.fail_print("Failed: {0}",len(self.summary_info['failed']))
             for test in self.summary_info['failed']:
                 self.fail_print("  {0}/{1}",test['library'],test['test-name'])
-    
+
     def p_print(self, format, *args, **kargs):
-        print format.format(*args,**kargs)
-    
+        write_line(format_text(format,args,kargs))
+
     def info_print(self, format, *args, **kargs):
-        print self.INFO+format.format(*args,**kargs)+self.ENDC
-    
+        write_line(self.INFO+format_text(format,args,kargs)+self.ENDC)
+
     def header_print(self, format, *args, **kargs):
-        print self.HEADER+format.format(*args,**kargs)+self.ENDC
-    
+        write_line(self.HEADER+format_text(format,args,kargs)+self.ENDC)
+
     def ok_print(self, format, *args, **kargs):
-        print self.OK+format.format(*args,**kargs)+self.ENDC
-    
+        write_line(self.OK+format_text(format,args,kargs)+self.ENDC)
+
     def warn_print(self, format, *args, **kargs):
-        print self.WARNING+format.format(*args,**kargs)+self.ENDC
-    
+        write_line(self.WARNING+format_text(format,args,kargs)+self.ENDC)
+
     def fail_print(self, format, *args, **kargs):
-        print self.FAIL+format.format(*args,**kargs)+self.ENDC
+        write_line(self.FAIL+format_text(format,args,kargs)+self.ENDC)
 
 class Main(object):
-    
+
     def __init__(self,args=None):
         op = optparse.OptionParser(
             usage="%prog [options] input+")

@@ -13,9 +13,19 @@ import optparse
 import os
 import os.path
 import platform
-import string
 import sys
 import time
+import traceback
+
+
+def open_text( path, mode = 'r' ):
+    '''
+    Open a text file as UTF-8 on both Python 2 and 3. Comment files are HTML
+    that may hold non-ASCII text, so the locale's encoding must not be used.
+    '''
+    if sys.version_info[0] >= 3:
+        return open( path, mode, encoding = 'utf-8' )
+    return open( path, mode )
 
 git_info = {
     'build' : {
@@ -47,41 +57,41 @@ git_branch = {
     }
 
 class utils:
-    
+
     @staticmethod
     def system( commands ):
         if sys.platform == 'win32':
             f = open( 'tmp.cmd', 'w' )
-            f.write( string.join( commands, '\n' ) )
+            f.write( "\n".join( commands ) )
             f.close()
             rc = os.system( 'tmp.cmd' )
             return rc
         else:
             rc = os.system( '&&'.join( commands ) )
             return rc
-    
-        
+
+
     @staticmethod
     def checked_system( commands, valid_return_codes = [ 0 ] ):
-        rc = utils.system( commands ) 
+        rc = utils.system( commands )
         if rc not in [ 0 ] + valid_return_codes:
             raise Exception( 'Command sequence "%s" failed with return code %d' % ( commands, rc ) )
         return rc
-    
+
     @staticmethod
     def makedirs( path ):
         if not os.path.exists( path ):
             os.makedirs( path )
-    
+
     @staticmethod
     def log_level():
        frames = inspect.stack()
        level = 0
        for i in frames[ 3: ]:
-           if i[0].f_locals.has_key( '__log__' ):
+           if '__log__' in i[0].f_locals:
                level = level + i[0].f_locals[ '__log__' ]
        return level
-    
+
     @staticmethod
     def log( message ):
         sys.stderr.write( '# ' + '    ' * utils.log_level() +  message + '\n' )
@@ -90,12 +100,12 @@ class utils:
 class runner:
 
     def __init__(self,root):
-        commands = map(
+        commands = list(map(
             lambda m: m[8:].replace('_','-'),
             filter(
                 lambda m: m.startswith('command_'),
                 runner.__dict__.keys())
-            )
+            ))
         commands.sort()
         commands = "commands: %s" % ', '.join(commands)
 
@@ -209,7 +219,7 @@ class runner:
 
         #~ Initialize option dependent values.
         self.regression_root = root
-        
+
         #~ Boost paths.
         self.boost_root = os.path.join( self.regression_root, 'boost_root' )
         self.regression_results = os.path.join( self.regression_root, 'results' )
@@ -217,16 +227,16 @@ class runner:
             self.regression_log = os.path.join( self.regression_results, 'bjam.log' )
         else:
             self.regression_log = os.path.join( self.regression_results, 'bjam.xml' )
-        
+
         #~ Boost Build paths.
         self.tools_bb_root = os.path.join( self.regression_root,'boost_bb' )
         self.tools_bb_root = os.path.join( self.tools_bb_root, 'src')
         self.tools_bjam_root = os.path.join( self.regression_root,'boost_bb', 'src', 'engine' )
-        
+
         #~ Regression tools paths.
         self.tools_regression_root = os.path.join( self.regression_root,'boost_regression' )
         self.xsl_reports_dir = os.path.join( self.tools_regression_root, 'xsl_reports' )
-        
+
         self.timestamp_path = os.path.join( self.regression_root, 'timestamp' )
         if sys.platform == 'win32':
             self.patch_boost = 'patch_boost.bat'
@@ -280,7 +290,7 @@ class runner:
 
         # if no -m bjam option add -m64 (limit target to 64 kb of output)
         import re
-        if not [e for e in re.split('\s+', self.bjam_options) if e.startswith('-m')]:
+        if not [e for e in re.split(r'\s+', self.bjam_options) if e.startswith('-m')]:
             self.bjam_options += ' -m64'
 
         self.main()
@@ -444,13 +454,13 @@ class runner:
         comment_path = os.path.join( self.regression_root, self.comment )
         if not os.path.exists( comment_path ):
             self.log( 'Comment file "%s" not found; creating default comment.' % comment_path )
-            f = open( comment_path, 'w' )
+            f = open_text( comment_path, 'w' )
             f.write( '<p>Tests are run on %s platform.</p>' % self.platform_name() )
             f.close()
 
         source = 'tarball'
         revision = self.git_revision(self.boost_root)
-        
+
         # Generate expanded comment file that has extra status
         # information. In particular the revisions of all the git
         # repos in the test tree.
@@ -458,10 +468,10 @@ class runner:
         comment_path = os.path.join(
             os.path.dirname(base_comment_path),
             'full-'+os.path.basename(base_comment_path))
-        comment_file = open(comment_path, 'w')
+        comment_file = open_text(comment_path, 'w')
         try:
             comment_file.write("\n")
-            base_comment_file = open(base_comment_path, 'r')
+            base_comment_file = open_text(base_comment_path, 'r')
             try:
                 comment_file.write(base_comment_file.read())
             finally:
@@ -553,10 +563,9 @@ class runner:
 
     def command_regression(self):
         import socket
-        import string
         try:
             mail_subject = 'Boost regression for %s on %s' % ( self.tag,
-                string.split(socket.gethostname(), '.')[0] )
+                socket.gethostname().split('.')[0] )
             start_time = time.localtime()
             if self.mail:
                 self.log( 'Sending start notification to "%s"' % self.mail )
@@ -604,7 +613,7 @@ class runner:
         except:
             if self.mail:
                 self.log( 'Sending report to "%s"' % self.mail )
-                traceback_ = '\n'.join( apply( traceback.format_exception, sys.exc_info() ) )
+                traceback_ = '\n'.join( traceback.format_exception( *sys.exc_info() ) )
                 end_time = time.localtime()
                 self.send_mail(
                     '%s failed at %s.' % ( mail_subject, format_time( end_time ) ),
@@ -617,8 +626,8 @@ class runner:
 
         import re
         re_keyword_value = re.compile( r'^\$\w+:\s+(.*)\s+\$$' )
-        print '\n\tRevision: %s' % re_keyword_value.match( revision ).group( 1 )
-        print '\tLast modified on: %s\n' % re_keyword_value.match( modified ).group( 1 )
+        print('\n\tRevision: %s' % re_keyword_value.match( revision ).group( 1 ))
+        print('\tLast modified on: %s\n' % re_keyword_value.match( modified ).group( 1 ))
 
     #~ Utilities...
 
@@ -645,6 +654,8 @@ class runner:
     def rmtree(self,path):
         if os.path.exists( path ):
             import shutil
+            if sys.version_info[0] == 3:
+                unicode = str
             #~ shutil.rmtree( unicode( path ) )
             if sys.platform == 'win32':
                 os.system( 'del /f /s /q "%s" >nul 2>&1' % path )
@@ -666,7 +677,7 @@ class runner:
         for attempts in range( max_attempts, -1, -1 ):
             try:
                 return f()
-            except Exception, msg:
+            except Exception as msg:
                 self.log( '%s failed with message "%s"' % ( f.__name__, msg ) )
                 if attempts == 0:
                     self.log( 'Giving up.' )
@@ -676,13 +687,22 @@ class runner:
                 time.sleep( sleep_secs )
 
     def http_get( self, source_url, destination_file ):
-        import urllib
+        try:
+            from urllib.request import urlopen, Request
+        except ImportError:
+            from urllib2 import urlopen, Request
 
-        proxies = None
-        if hasattr(self,'proxy') and self.proxy is not None:
-            proxies = { 'https' : self.proxy }
+        req = Request(source_url)
+        if getattr(self,'proxy',None):
+            # set_proxy() takes (host, type), the reverse of the order the
+            # PR had it in, and host must not carry a scheme prefix.
+            proxy = self.proxy
+            for prefix in ('http://', 'https://'):
+                if proxy.startswith(prefix):
+                    proxy = proxy[len(prefix):]
+            req.set_proxy(proxy, 'https')
 
-        src = urllib.urlopen( source_url, proxies = proxies )
+        src = urlopen( req )
 
         f = open( destination_file, 'wb' )
         while True:
@@ -702,7 +722,7 @@ class runner:
 
         if toolset is None:
             if self.toolsets is not None:
-                toolset = string.split( self.toolsets, ',' )[0]
+                toolset = self.toolsets.split(',' )[0]
             else:
                 toolset = tool[ 'default_toolset' ]
                 self.log( 'Warning: No bootstrap toolset for "%s" was specified.' % tool[ 'name' ] )
@@ -714,24 +734,30 @@ class runner:
             self.log( 'Building "%s" (%s)...' % ( tool[ 'name'], build_cmd ) )
             utils.system( [ 'cd "%s"' % tool[ 'source_dir' ], build_cmd ] )
         else:
-            raise 'Could not find "%s" source directory "%s"' % ( tool[ 'name' ], tool[ 'source_dir' ] )
+            raise Exception( 'Could not find "%s" source directory "%s"' % ( tool[ 'name' ], tool[ 'source_dir' ] ) )
 
-        if not tool.has_key( 'build_path' ):
+        if not 'build_path' in tool:
             tool[ 'build_path' ] = self.tool_path( tool )
 
         if not os.path.exists( tool[ 'build_path' ] ):
-            raise 'Failed to find "%s" after build.' % tool[ 'build_path' ]
+            raise Exception( 'Failed to find "%s" after build.' % tool[ 'build_path' ] )
 
         self.log( '%s succesfully built in "%s" location' % ( tool[ 'name' ], tool[ 'build_path' ] ) )
 
     def tool_path( self, name_or_spec ):
+        # Python 2 and 3 compatible
+        try:
+            basestring
+        except NameError:
+            basestring = str
+
         if isinstance( name_or_spec, basestring ):
             return os.path.join( self.regression_root, name_or_spec )
 
         if os.path.exists( name_or_spec[ 'path' ] ):
             return name_or_spec[ 'path' ]
 
-        if name_or_spec.has_key( 'build_path' ):
+        if 'build_path' in name_or_spec:
             return name_or_spec[ 'build_path' ]
 
         build_dir = name_or_spec[ 'build_dir' ]
@@ -751,7 +777,7 @@ class runner:
         else:
             cmd = './build.sh %s' % self.bjam_toolset
         env_setup_key = 'BJAM_ENVIRONMENT_SETUP'
-        if os.environ.has_key( env_setup_key ):
+        if env_setup_key in os.environ:
             return '%s & %s' % ( os.environ[env_setup_key], cmd )
         return cmd
 
@@ -791,7 +817,7 @@ class runner:
             password = None
         else:
             server_name = self.smtp_login.split( '@' )[-1]
-            ( user_name, password ) = string.split( self.smtp_login.split( '@' )[0], ':' )
+            ( user_name, password ) = self.smtp_login.split( '@' )[0].split(':')
 
         log( '    Sending mail through "%s"...' % server_name )
         smtp_server = smtplib.SMTP( server_name )
@@ -811,7 +837,7 @@ class runner:
             z.write( file_path, os.path.basename( file_path ) )
             z.close()
             utils.log( 'Done writing "%s".'% archive_path )
-        except Exception, msg:
+        except Exception as msg:
             utils.log( 'Warning: Compressing falied (%s)' % msg )
             utils.log( '         Trying to compress using a platform-specific tool...' )
             try:
@@ -881,11 +907,11 @@ class runner:
         self.git_checkout(git_info['boost'], self.git_branch(), clean)
 
     def git_branch(self):
-        if git_branch.has_key(self.tag):
+        if self.tag in git_branch:
             return git_branch[self.tag]
         else:
             return self.tag
-    
+
     def git_revision(self, root):
         result = ''
         if self.use_git:
@@ -995,7 +1021,7 @@ class runner:
                     result.close()
             z.close()
         else:
-            raise 'Do not know how to unpack archives with extension \"%s\"' % extension
+            raise Exception( 'Do not know how to unpack archives with extension \"%s\"' % extension )
 
         boost_dir = self.find_boost_dirs()[0]
         self.log( '    Unpacked into directory "%s"' % boost_dir )
@@ -1013,5 +1039,3 @@ class runner:
                 glob.glob( os.path.join( self.regression_root, 'boost[-_]*' ) )
                 if os.path.isdir( x )
             ]
-
-
